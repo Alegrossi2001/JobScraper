@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { scrapeJustJoin }    from './scrapers/justjoin';
 import { scrapeNoFluffJobs } from './scrapers/nofluffjobs';
 import { scrapeBulldogjob }  from './scrapers/bulldogjob';
-import { insertJob }         from './notion/database';
+import { insertJob, fetchExistingJobIds } from './notion/database';
 import { loadSeenJobs, saveSeenJobs, isNew, markSeen } from './dedup';
 import { logger }            from './logger';
 import { sleep }             from './http';
@@ -16,7 +16,7 @@ const SCRAPERS: Array<{ name: string; fn: () => Promise<Job[]> }> = [
 
 async function runScraper(name: string, fn: () => Promise<Job[]>): Promise<ScraperResult> {
   const source = name as ScraperResult['source'];
-  const start = Date.now();
+  const start  = Date.now();
   try {
     const jobs = await fn();
     return { source, jobs, durationMs: Date.now() - start };
@@ -34,8 +34,15 @@ async function main() {
 
   logger.section(`Job Scraper — ${new Date().toLocaleString('pl-PL')}`);
 
-  const seen = loadSeenJobs();
-  let totalNew = 0;
+  // Primary dedup: query Notion directly (works in cloud where seen_jobs.json is ephemeral)
+  // Secondary: local file (for local runs — avoids redundant Notion queries)
+  logger.info('Loading existing job IDs from Notion…');
+  const notionIds = await fetchExistingJobIds(dbId);
+  const localSeen = loadSeenJobs();
+  const seen      = new Set([...notionIds, ...localSeen]);
+  logger.info(`Dedup: ${notionIds.size} in Notion, ${localSeen.size} local → ${seen.size} total known`);
+
+  let totalNew    = 0;
   let totalErrors = 0;
 
   for (const { name, fn } of SCRAPERS) {
@@ -57,17 +64,17 @@ async function main() {
         await insertJob(dbId, job);
         markSeen(job.id, seen);
         totalNew++;
-        logger.ok(`  + ${job.title} @ ${job.company}${job.salaryMin ? ` · ${job.salaryMin}–${job.salaryMax} ${job.currency}` : ''}`);
-
-        // Stay well within Notion's rate limit (3 req/s)
-        await sleep(350);
+        const salary = job.salaryMin
+          ? ` · ${job.salaryMin}–${job.salaryMax} ${job.currency}`
+          : '';
+        logger.ok(`  + ${job.title} @ ${job.company}${salary}`);
+        await sleep(350); // stay within Notion 3 req/s limit
       } catch (err) {
         logger.error(`  Failed to insert ${job.id}: ${(err as Error).message}`);
         totalErrors++;
       }
     }
 
-    // Polite gap between scrapers
     await sleep(2_000);
   }
 
