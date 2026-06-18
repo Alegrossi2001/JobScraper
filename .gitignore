@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.env
+data/seen_jobs.json
+*.js.map
