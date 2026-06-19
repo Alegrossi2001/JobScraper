@@ -107,6 +107,7 @@ function cap(s: string): string {
 }
 
 export async function insertJob(databaseId: string, job: Job): Promise<void> {
+  if (!job.title?.trim()) throw new Error(`Job ${job.id} has an empty title — skipping`);
   const notion = getClient();
 
   // Truncate tech stack entries — Notion multi_select option names max 100 chars

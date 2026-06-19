@@ -8,7 +8,8 @@
     "setup": "tsx src/setup.ts",
     "dev": "tsx watch src/index.ts",
     "build": "tsc --noEmit",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "cleanup": "tsx src/cleanup.ts"
   },
   "dependencies": {
     "@notionhq/client": "^2.2.15",

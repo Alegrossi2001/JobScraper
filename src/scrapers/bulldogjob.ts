@@ -10,8 +10,12 @@ const LISTING_URL = `${BASE_URL}/companies/jobs/s/city,Poznan`;
 // ─── Strategy 1: undocumented JSON API ───────────────────────────────────────
 
 interface BDJApiJob {
-  id: number | string;
-  title: string;
+  id?: number | string;
+  // Bulldogjob uses different field names depending on endpoint/version
+  title?: string;
+  name?: string;
+  position?: string;
+  headline?: string;
   company_name?: string;
   company?: { name: string };
   city?: string;
@@ -24,6 +28,14 @@ interface BDJApiJob {
   remote?: boolean;
 }
 
+function resolveTitle(j: BDJApiJob): string {
+  return (j.title ?? j.name ?? j.position ?? j.headline ?? '').trim();
+}
+
+function resolveId(j: BDJApiJob): string {
+  return String(j.id ?? j.slug ?? '').trim();
+}
+
 async function tryJsonApi(): Promise<Job[] | null> {
   const skills = SETTINGS.categories.join(',');
   try {
@@ -33,9 +45,9 @@ async function tryJsonApi(): Promise<Job[] | null> {
       })
     );
     if (!Array.isArray(data) || data.length === 0) return null;
-    return data.map(j => ({
-      id:          `bdj_${j.id}`,
-      title:       j.title,
+    return data.filter(j => resolveTitle(j).length > 0).map(j => ({
+      id:          `bdj_${resolveId(j)}`,
+      title:       resolveTitle(j),
       company:     j.company_name ?? j.company?.name ?? '',
       location:    j.city ?? 'Poznan',
       salaryMin:   j.salary_from,
@@ -78,9 +90,9 @@ async function tryNextData(): Promise<Job[] | null> {
 
     for (const c of candidates) {
       if (!Array.isArray(c) || c.length === 0) continue;
-      return (c as BDJApiJob[]).map(j => ({
-        id:          `bdj_${j.id ?? j.slug ?? j.title}`,
-        title:       j.title,
+      return (c as BDJApiJob[]).filter(j => resolveTitle(j).length > 0).map(j => ({
+        id:          `bdj_${resolveId(j)}`,
+        title:       resolveTitle(j),
         company:     j.company_name ?? j.company?.name ?? '',
         location:    j.city ?? 'Poznan',
         salaryMin:   j.salary_from,

@@ -25,6 +25,42 @@ interface NFJPosting {
   tiles?: { values: Array<{ value: string; type: string }> };
 }
 
+// ─── SWE title guard (RSS-only; API already filters server-side) ─────────────
+// Prevents broad RSS matches like "Office Manager", "Courier", "3D Artist", etc.
+
+const SWE_TITLE_MARKERS = [
+  // Role words — specific enough not to hit company names
+  'developer', 'engineer', 'architect', 'programmer',
+  'backend', 'frontend', 'fullstack', 'full stack', 'full-stack',
+  'devops', 'devsecops', 'sre',
+  // Leadership that implies coding org
+  'tech lead', 'engineering manager', 'engineering lead', 'cto', 'vp of engineering',
+  // Language/tech keywords (standalone)
+  'python', 'javascript', 'typescript', 'golang', '.net',
+  'kotlin', 'swift', 'php', 'ruby', 'rust', 'scala', 'c++', 'embedded',
+  // Compound phrases (avoid false positives from standalone 'software', 'mobile', 'cloud')
+  'software engineer', 'software developer', 'software architect',
+  'mobile developer', 'mobile engineer', 'android developer', 'ios developer',
+  'cloud engineer', 'cloud architect', 'cloud developer',
+  'platform engineer', 'platform developer',
+  'data engineer', 'data scientist', 'data developer',
+  'ml engineer', 'machine learning engineer',
+  'security engineer', 'security developer', 'penetration tester',
+  'infrastructure engineer',
+  // QA
+  'tester', 'quality assurance', 'automation tester',
+];
+
+// Strip the company suffix that some RSS feeds append ("Title @ Company" or "Title – Company")
+function extractRoleOnly(rawTitle: string): string {
+  return rawTitle.replace(/\s+[@–—]\s+.+$/, '').trim();
+}
+
+function isSweTitle(rawTitle: string): boolean {
+  const role = extractRoleOnly(rawTitle).toLowerCase();
+  return SWE_TITLE_MARKERS.some(kw => role.includes(kw));
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function isInPoznan(p: NFJPosting): boolean {
@@ -57,6 +93,7 @@ async function tryApi(): Promise<Job[] | null> {
   try {
     const data = await withRetry(() =>
       get<{ postings: NFJPosting[] }>(`${SEARCH_URL}?criteria=${criteria}`, {
+        timeout: 15_000, // fail fast — ScraperAPI proxying can hang for minutes
         headers: {
           Accept: 'application/json',
           'X-Requested-With': 'XMLHttpRequest',
@@ -74,7 +111,9 @@ async function tryApi(): Promise<Job[] | null> {
 }
 
 // ─── Strategy 2: RSS feed ─────────────────────────────────────────────────────
-// RSS doesn't require auth/cookies and is rarely behind bot detection.
+// RSS returns all jobs from Poland. We must apply strict local filtering:
+//   • Location: description must explicitly mention Poznań OR job is fully remote
+//   • Role: job title must indicate an SWE/engineering role
 
 function parseSalaryFromDesc(desc: string): { from?: number; to?: number; currency: string } {
   const m = desc.replace(/\s/g, '').match(/(\d{4,6})[–\-](\d{4,6})(PLN|EUR|USD)/i);
@@ -91,44 +130,43 @@ async function tryRss(): Promise<Job[] | null> {
       })
     );
 
-    const $ = cheerio.load(xml as string, { xmlMode: true });
+    const $    = cheerio.load(xml as string, { xmlMode: true });
     const jobs: Job[] = [];
 
     $('item').each((_, el) => {
-      const $el   = $(el);
-      const title = $el.find('title').first().text().trim();
-      const link  = $el.find('link').first().text().trim();
-      const desc  = $el.find('description').first().text();
-      const guid  = $el.find('guid').first().text().trim();
+      const $el    = $(el);
+      const title  = $el.find('title').first().text().trim();
+      const link   = $el.find('link').first().text().trim();
+      const desc   = $el.find('description').first().text();
+      const guid   = $el.find('guid').first().text().trim();
 
       if (!title || !link) return;
 
-      // Filter to Poznan — description contains location
-      const descLower = desc.toLowerCase();
-      const isRemote  = descLower.includes('remote') || descLower.includes('zdalnie');
-      const inPoznan  = descLower.includes('pozna') || isRemote;
-      if (!inPoznan) return;
+      // Guard 1: must be an SWE/engineering title
+      if (!isSweTitle(title)) return;
 
-      // Filter to relevant categories
-      const cats = SETTINGS.categories as readonly string[];
-      const relevant = cats.some(c => title.toLowerCase().includes(c) || descLower.includes(c));
-      if (!relevant) return;
+      const descLower = desc.toLowerCase();
+
+      // Guard 2: must be in Poznań or fully remote (not just "remote available")
+      const hasCity      = descLower.includes('pozna');
+      const isFullRemote = /\bfull[y]?\s*remote\b|\bzdalnie\b|\bremote\s*only\b/i.test(desc);
+      if (!hasCity && !isFullRemote) return;
 
       const { from, to, currency } = parseSalaryFromDesc(desc);
       const id = guid.split('/').pop() ?? title.replace(/\s+/g, '_').slice(0, 40);
 
-      // Extract tech stack from description tags
+      // Extract tech tags from description (short alphanumeric strings only)
       const $desc = cheerio.load(desc);
-      const tags  = $desc('li, .requirement, span')
+      const tags  = $desc('li, span')
         .map((_, t) => $desc(t).text().trim())
         .get()
-        .filter(t => t.length < 30 && /^[a-zA-Z0-9#+.\-/ ]+$/.test(t));
+        .filter(t => t.length > 1 && t.length < 25 && /^[a-zA-Z0-9#+.\-/ ]+$/.test(t));
 
       jobs.push({
-        id:          `nfj_${id}`,
+        id:          `nfj_rss_${id}`,
         title,
-        company:     '', // RSS doesn't always expose company separately
-        location:    isRemote ? 'Remote' : 'Poznan',
+        company:     '',
+        location:    hasCity ? 'Poznan' : 'Remote',
         salaryMin:   from,
         salaryMax:   to,
         currency,
@@ -136,7 +174,7 @@ async function tryRss(): Promise<Job[] | null> {
         source:      'NoFluffJobs',
         url:         link,
         dateScraped: new Date().toISOString(),
-        remote:      isRemote,
+        remote:      isFullRemote,
       });
     });
 
