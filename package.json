@@ -10,7 +10,10 @@
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "cleanup": "tsx src/cleanup.ts",
-    "apply": "tsx src/apply/listNewJobs.ts"
+    "apply": "tsx src/apply/listNewJobs.ts",
+    "linkedin:setup": "tsx src/linkedin/createOutreachDb.ts",
+    "linkedin:companies": "tsx src/linkedin/getCompanies.ts",
+    "linkedin:search": "tsx src/linkedin/apolloSearch.ts"
   },
   "dependencies": {
     "@notionhq/client": "^2.2.15",
