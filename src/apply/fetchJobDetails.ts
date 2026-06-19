@@ -1,7 +1,14 @@
 import * as dotenv from 'dotenv';
-dotenv.config();
+import * as path from 'path';
+dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 import axios from 'axios';
 import * as cheerio from 'cheerio';
+
+function proxyUrl(url: string): string {
+  const key = process.env.SCRAPER_API_KEY;
+  if (!key) return url;
+  return `https://api.scraperapi.com/?api_key=${key}&url=${encodeURIComponent(url)}`;
+}
 
 // ATS platforms and redirect systems that require manual application
 const ATS_DOMAINS = [
@@ -57,8 +64,8 @@ async function main() {
   const result: Record<string, any> = { url, description: '', applyType: 'unknown', applyEmail: null, atsUrl: null };
 
   try {
-    const { data: html } = await axios.get<string>(url, {
-      timeout: 30_000,
+    const { data: html } = await axios.get<string>(proxyUrl(url), {
+      timeout: 60_000,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
