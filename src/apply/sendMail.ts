@@ -12,7 +12,7 @@ async function main() {
   }
 
   const htmlBody = fs.readFileSync(htmlFile, 'utf-8');
-  const cvPath   = path.join(process.cwd(), 'src', 'CV', 'ALEX - CV 2026.pdf');
+  const cvPath   = path.join(process.cwd(), process.env.CV_PATH ?? 'src/CV/ALEX - CV 2026.pdf');
 
   const transporter = nodemailer.createTransport({
     service: 'gmail',
