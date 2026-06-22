@@ -35,11 +35,16 @@ function proxyUrl(url: string): string {
   return `https://api.scraperapi.com/?api_key=${key}&url=${encodeURIComponent(url)}`;
 }
 
-export async function get<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
+/**
+ * `noProxy` forces a direct request even when SCRAPER_API_KEY is set.
+ * Required for JSON APIs whose query string ScraperAPI mangles into the path
+ * (e.g. api.justjoin.it returns 404 when proxied because `?…` is swallowed).
+ */
+export async function get<T>(url: string, config?: AxiosRequestConfig, noProxy = false): Promise<T> {
   const wantJson = String(config?.headers?.['Accept'] ?? '').includes('application/json');
   const defaultHeaders = wantJson ? API_HEADERS : BROWSER_HEADERS;
 
-  const res = await axios.get<T>(proxyUrl(url), {
+  const res = await axios.get<T>(noProxy ? url : proxyUrl(url), {
     timeout: 60_000, // ScraperAPI adds latency
     headers: { ...defaultHeaders, ...config?.headers },
     ...config,

@@ -49,15 +49,36 @@ const SWE_TITLE_MARKERS = [
   'infrastructure engineer',
   // QA
   'tester', 'quality assurance', 'automation tester',
+  // Standalone / Polish-language dev signals (RSS titles are often in Polish)
+  'java', 'infrastructure', 'programist', 'deweloper',
 ];
 
-// Strip the company suffix that some RSS feeds append ("Title @ Company" or "Title – Company")
-function extractRoleOnly(rawTitle: string): string {
-  return rawTitle.replace(/\s+[@–—]\s+.+$/, '').trim();
+// The RSS feed is double-escaped, so cheerio's xmlMode leaves one layer behind
+// (e.g. "Cloud&amp;Engineering"). Decode that remaining layer.
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0*39;|&apos;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCharCode(parseInt(n, 16)))
+    .trim();
+}
+
+// NoFluffJobs RSS titles are "Role @ Company". Split them so the company isn't
+// left empty and the stored title isn't polluted with the company suffix.
+function splitTitleCompany(raw: string): { title: string; company: string } {
+  const i = raw.indexOf(' @ ');
+  return i !== -1
+    ? { title: raw.slice(0, i).trim(), company: raw.slice(i + 3).trim() }
+    : { title: raw.trim(), company: '' };
 }
 
 function isSweTitle(rawTitle: string): boolean {
-  const role = extractRoleOnly(rawTitle).toLowerCase();
+  const role = splitTitleCompany(rawTitle).title.toLowerCase();
   return SWE_TITLE_MARKERS.some(kw => role.includes(kw));
 }
 
@@ -135,15 +156,17 @@ async function tryRss(): Promise<Job[] | null> {
 
     $('item').each((_, el) => {
       const $el    = $(el);
-      const title  = $el.find('title').first().text().trim();
+      const rawTitle = decodeEntities($el.find('title').first().text());
       const link   = $el.find('link').first().text().trim();
       const desc   = $el.find('description').first().text();
       const guid   = $el.find('guid').first().text().trim();
 
-      if (!title || !link) return;
+      if (!rawTitle || !link) return;
 
       // Guard 1: must be an SWE/engineering title
-      if (!isSweTitle(title)) return;
+      if (!isSweTitle(rawTitle)) return;
+
+      const { title, company } = splitTitleCompany(rawTitle);
 
       const descLower = desc.toLowerCase();
 
@@ -165,7 +188,7 @@ async function tryRss(): Promise<Job[] | null> {
       jobs.push({
         id:          `nfj_rss_${id}`,
         title,
-        company:     '',
+        company,
         location:    hasCity ? 'Poznan' : 'Remote',
         salaryMin:   from,
         salaryMax:   to,

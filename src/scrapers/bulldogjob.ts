@@ -7,34 +7,106 @@ import { logger } from '../logger';
 const BASE_URL    = 'https://bulldogjob.pl';
 const LISTING_URL = `${BASE_URL}/companies/jobs/s/city,Poznan`;
 
-// ─── Strategy 1: undocumented JSON API ───────────────────────────────────────
+// ─── Shape (covers both the JSON API and the Next.js SSR payload) ────────────
 
 interface BDJApiJob {
   id?: number | string;
-  // Bulldogjob uses different field names depending on endpoint/version
+  // Title varies by endpoint: the SSR payload uses `position`.
   title?: string;
   name?: string;
   position?: string;
   headline?: string;
+  // Company is a string in some endpoints, an object in the SSR payload.
   company_name?: string;
-  company?: { name: string };
+  company?: { name?: string } | string;
   city?: string;
+  // Legacy numeric salary (JSON API) vs SSR `denominatedSalaryLong`.
   salary_from?: number;
   salary_to?: number;
   salary_currency?: string;
+  denominatedSalaryLong?: { money?: string; currency?: string };
   slug?: string;
   tags?: string[];
+  technologyTags?: string[];
   seniority?: string;
+  experienceLevel?: string;
   remote?: boolean;
 }
 
 function resolveTitle(j: BDJApiJob): string {
-  return (j.title ?? j.name ?? j.position ?? j.headline ?? '').trim();
+  return (j.position ?? j.title ?? j.name ?? j.headline ?? '').trim();
 }
 
 function resolveId(j: BDJApiJob): string {
   return String(j.id ?? j.slug ?? '').trim();
 }
+
+function resolveCompany(j: BDJApiJob): string {
+  if (typeof j.company === 'string') return j.company.trim();
+  return (j.company?.name ?? j.company_name ?? '').trim();
+}
+
+// Bulldogjob's SSR seniority uses "medium" where our Notion select expects "mid".
+function normalizeSeniority(s?: string): string | undefined {
+  if (!s) return undefined;
+  return s.toLowerCase() === 'medium' ? 'mid' : s;
+}
+
+// SSR salary is a string like "25 000 - 30 000"; the JSON API uses numbers.
+function resolveSalary(j: BDJApiJob): { min?: number; max?: number; currency: string } {
+  if (j.salary_from != null) {
+    return { min: j.salary_from, max: j.salary_to, currency: j.salary_currency ?? 'PLN' };
+  }
+  const money = j.denominatedSalaryLong?.money;
+  const currency = j.denominatedSalaryLong?.currency ?? 'PLN';
+  if (money) {
+    const m = money.replace(/\s/g, '').match(/(\d+)\D+(\d+)/);
+    if (m) return { min: Number(m[1]), max: Number(m[2]), currency };
+    const one = money.replace(/\s/g, '').match(/(\d+)/);
+    if (one) return { min: Number(one[1]), currency };
+  }
+  return { currency };
+}
+
+function mapJob(j: BDJApiJob): Job {
+  const rawId  = resolveId(j);
+  const salary = resolveSalary(j);
+  return {
+    id:          `bdj_${rawId}`,
+    title:       resolveTitle(j),
+    company:     resolveCompany(j),
+    location:    j.city ?? 'Poznan',
+    salaryMin:   salary.min,
+    salaryMax:   salary.max,
+    currency:    salary.currency,
+    techStack:   j.technologyTags ?? j.tags ?? [],
+    source:      'Bulldogjob' as const,
+    url:         rawId ? `${BASE_URL}/companies/jobs/${rawId}` : `${BASE_URL}/companies/jobs`,
+    dateScraped: new Date().toISOString(),
+    experience:  normalizeSeniority(j.experienceLevel ?? j.seniority),
+    remote:      j.remote ?? false,
+  };
+}
+
+// Bulldogjob's listing payload includes jobs from other cities (Warsaw, Paris, …)
+// and lists the same role many times. Keep Poznań/remote roles and collapse the
+// content duplicates that distinct IDs would otherwise let through.
+function isPoznanOrRemote(j: Job): boolean {
+  return j.location.toLowerCase().includes('pozna') || j.remote;
+}
+
+function finalize(jobs: Job[]): Job[] {
+  const seen = new Set<string>();
+  return jobs.filter(j => {
+    if (!j.title?.trim() || !isPoznanOrRemote(j)) return false;
+    const key = `${j.title.toLowerCase().trim()}|${j.company.toLowerCase().trim()}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+// ─── Strategy 1: undocumented JSON API ───────────────────────────────────────
 
 async function tryJsonApi(): Promise<Job[] | null> {
   const skills = SETTINGS.categories.join(',');
@@ -45,28 +117,13 @@ async function tryJsonApi(): Promise<Job[] | null> {
       })
     );
     if (!Array.isArray(data) || data.length === 0) return null;
-    return data.filter(j => resolveTitle(j).length > 0).map(j => ({
-      id:          `bdj_${resolveId(j)}`,
-      title:       resolveTitle(j),
-      company:     j.company_name ?? j.company?.name ?? '',
-      location:    j.city ?? 'Poznan',
-      salaryMin:   j.salary_from,
-      salaryMax:   j.salary_to,
-      currency:    j.salary_currency ?? 'PLN',
-      techStack:   j.tags ?? [],
-      source:      'Bulldogjob' as const,
-      url:         j.slug ? `${BASE_URL}/companies/jobs/${j.slug}` : `${BASE_URL}/companies/jobs`,
-      dateScraped: new Date().toISOString(),
-      experience:  j.seniority,
-      remote:      j.remote ?? false,
-    }));
+    return data.map(mapJob);
   } catch {
     return null;
   }
 }
 
 // ─── Strategy 2: __NEXT_DATA__ from the SSR HTML ─────────────────────────────
-// Bulldogjob uses Next.js — initial job data is embedded in the page JSON.
 
 async function tryNextData(): Promise<Job[] | null> {
   try {
@@ -78,8 +135,6 @@ async function tryNextData(): Promise<Job[] | null> {
     if (!raw) return null;
 
     const data = JSON.parse(raw);
-
-    // Try common Next.js pageProps paths for job listings
     const candidates: unknown[] = [
       data?.props?.pageProps?.jobs,
       data?.props?.pageProps?.listings,
@@ -90,21 +145,7 @@ async function tryNextData(): Promise<Job[] | null> {
 
     for (const c of candidates) {
       if (!Array.isArray(c) || c.length === 0) continue;
-      return (c as BDJApiJob[]).filter(j => resolveTitle(j).length > 0).map(j => ({
-        id:          `bdj_${resolveId(j)}`,
-        title:       resolveTitle(j),
-        company:     j.company_name ?? j.company?.name ?? '',
-        location:    j.city ?? 'Poznan',
-        salaryMin:   j.salary_from,
-        salaryMax:   j.salary_to,
-        currency:    j.salary_currency ?? 'PLN',
-        techStack:   j.tags ?? [],
-        source:      'Bulldogjob' as const,
-        url:         j.slug ? `${BASE_URL}/companies/jobs/${j.slug}` : `${BASE_URL}/companies/jobs`,
-        dateScraped: new Date().toISOString(),
-        experience:  j.seniority,
-        remote:      j.remote ?? false,
-      }));
+      return (c as BDJApiJob[]).map(mapJob);
     }
     return null;
   } catch {
@@ -176,9 +217,7 @@ async function tryHtmlScraping(): Promise<Job[] | null> {
   try {
     const pages = await Promise.all([1, 2, 3].map(p => scrapePage(p).catch(() => [] as Job[])));
     const all   = pages.flat();
-    const seen  = new Set<string>();
-    const dedup = all.filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; });
-    return dedup.length > 0 ? dedup : null;
+    return all.length > 0 ? all : null;
   } catch {
     return null;
   }
@@ -189,22 +228,25 @@ async function tryHtmlScraping(): Promise<Job[] | null> {
 export async function scrapeBulldogjob(): Promise<Job[]> {
   const fromApi = await tryJsonApi();
   if (fromApi) {
-    logger.info(`Bulldogjob: JSON API returned ${fromApi.length} jobs`);
-    return fromApi;
+    const jobs = finalize(fromApi);
+    logger.info(`Bulldogjob: JSON API returned ${jobs.length} jobs`);
+    return jobs;
   }
 
   logger.info('Bulldogjob: JSON API unavailable — trying __NEXT_DATA__');
   const fromNext = await tryNextData();
   if (fromNext) {
-    logger.info(`Bulldogjob: __NEXT_DATA__ returned ${fromNext.length} jobs`);
-    return fromNext;
+    const jobs = finalize(fromNext);
+    logger.info(`Bulldogjob: __NEXT_DATA__ returned ${jobs.length} jobs (Poznań/remote, deduped)`);
+    return jobs;
   }
 
   logger.info('Bulldogjob: falling back to HTML scraping');
   const fromHtml = await tryHtmlScraping();
   if (fromHtml) {
-    logger.info(`Bulldogjob: HTML scraping returned ${fromHtml.length} jobs`);
-    return fromHtml;
+    const jobs = finalize(fromHtml);
+    logger.info(`Bulldogjob: HTML scraping returned ${jobs.length} jobs`);
+    return jobs;
   }
 
   logger.warn('Bulldogjob: all strategies failed — set SCRAPER_API_KEY to bypass bot detection');
