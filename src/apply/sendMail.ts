@@ -3,7 +3,6 @@ import * as path from 'path';
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 import nodemailer from 'nodemailer';
 import * as fs from 'fs';
-import * as path from 'path';
 
 async function main() {
   const [,, to, subject, htmlFile] = process.argv;

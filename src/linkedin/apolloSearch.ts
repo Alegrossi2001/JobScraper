@@ -17,17 +17,24 @@ const RECRUITMENT_TITLES = [
 
 async function searchPeople(companyName: string, titles: string[]): Promise<object[]> {
   try {
+    // Apollo requires the API key in the X-Api-Key header (body api_key → HTTP 422).
     const { data } = await axios.post(
-      'https://api.apollo.io/v1/mixed_people/search',
+      'https://api.apollo.io/api/v1/mixed_people/search',
       {
-        api_key:          process.env.APOLLO_API_KEY,
         organization_names: [companyName],
         person_titles:    titles,
         person_locations: ['Poland'],
         per_page:         5,
         page:             1,
       },
-      { headers: { 'Content-Type': 'application/json' }, timeout: 30_000 }
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache',
+          'X-Api-Key': process.env.APOLLO_API_KEY ?? '',
+        },
+        timeout: 30_000,
+      }
     );
 
     return (data.people ?? []).map((p: any) => ({
@@ -37,7 +44,11 @@ async function searchPeople(companyName: string, titles: string[]): Promise<obje
       email:        p.email ?? null,
       location:     p.city ? `${p.city}, ${p.country}` : (p.country ?? ''),
     }));
-  } catch {
+  } catch (err: any) {
+    // Surface the real reason instead of silently returning [] (looks like "no people").
+    const status = err.response?.status ?? '';
+    const msg = err.response?.data?.error ?? err.message;
+    console.error(`Apollo search failed for "${companyName}" [${status}]: ${msg}`);
     return [];
   }
 }

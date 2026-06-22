@@ -27,25 +27,36 @@ function isAtsDomain(url: string): boolean {
   } catch { return false; }
 }
 
-function findApplyEmail(html: string, $: cheerio.CheerioAPI): string | null {
-  // 1. Explicit mailto: links
-  let email: string | null = null;
+// Job-board / aggregator domains — their own emails (e.g. bulldogjob.pl's GDPR
+// inbox daneosobowe@bulldogjob.pl) must never be mistaken for an apply address.
+const BOARD_DOMAINS = ['bulldogjob.pl', 'justjoin.it', 'nofluffjobs.com', 'pracuj.pl', 'theprotocol.it', 'rocketjobs.pl'];
+// System / data-protection local-parts that are never an application address.
+const JUNK_LOCALPARTS = ['daneosobowe', 'rodo', 'gdpr', 'dpo', 'privacy', 'noreply', 'no-reply', 'abuse', 'postmaster', 'example', 'sentry', 'wixpress'];
+
+function isJunkEmail(e: string): boolean {
+  const [local, domain = ''] = e.toLowerCase().split('@');
+  if (BOARD_DOMAINS.some(d => domain === d || domain.endsWith('.' + d))) return true;
+  return JUNK_LOCALPARTS.some(j => local.includes(j));
+}
+
+function findApplyEmail(text: string, $: cheerio.CheerioAPI): string | null {
+  // 1. Explicit mailto: links (footer/nav already stripped from $)
+  const mailtos: string[] = [];
   $('a[href^="mailto:"]').each((_, el) => {
     const raw = $(el).attr('href')!.replace(/^mailto:/i, '').split('?')[0].trim();
-    if (raw.includes('@')) { email = raw; return false; }
+    if (raw.includes('@')) mailtos.push(raw);
   });
-  if (email) return email;
+  const goodMailto = mailtos.find(e => !isJunkEmail(e));
+  if (goodMailto) return goodMailto;
 
-  // 2. Email addresses visible in text (prefer HR/recruitment emails)
+  // 2. Email addresses in the cleaned page text (prefer HR/recruitment local-parts)
   const emailRe = /\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b/g;
-  const found = html.match(emailRe) ?? [];
-  const hrKeywords = ['career', 'recruit', 'hr', 'job', 'apply', 'hiring', 'work', 'talent', 'praca', 'kariera'];
-  const hrEmail = found.find(e => hrKeywords.some(k => e.toLowerCase().includes(k)));
+  const found = (text.match(emailRe) ?? []).filter(e => !isJunkEmail(e));
+  const hrKeywords = ['career', 'recruit', 'hr', 'job', 'apply', 'hiring', 'talent', 'praca', 'kariera', 'cv', 'rekrut'];
+  const hrEmail = found.find(e => hrKeywords.some(k => e.toLowerCase().split('@')[0].includes(k)));
   if (hrEmail) return hrEmail;
 
-  // 3. Any non-image, non-noreply email
-  const filtered = found.filter(e => !e.includes('example') && !e.includes('noreply') && !e.includes('no-reply'));
-  return filtered[0] ?? null;
+  return found[0] ?? null;
 }
 
 function findAtsUrl($: cheerio.CheerioAPI): string | null {
@@ -76,9 +87,10 @@ async function main() {
     const $ = cheerio.load(html);
     $('nav, header, footer, script, style, noscript, [role="navigation"]').remove();
 
-    result.description = $('body').text().replace(/\s+/g, ' ').trim().slice(0, 6000);
+    const bodyText = $('body').text().replace(/\s+/g, ' ').trim();
+    result.description = bodyText.slice(0, 6000);
 
-    const applyEmail = findApplyEmail(html, $);
+    const applyEmail = findApplyEmail(bodyText, $);
     const atsUrl     = findAtsUrl($);
 
     if (applyEmail) {
