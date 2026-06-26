@@ -3,11 +3,23 @@ import * as path from 'path';
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 import { Client } from '@notionhq/client';
 
-async function main() {
+export interface NewJob {
+  pageId: string;
+  role: string;
+  company: string;
+  url: string;
+  source: string;
+  salaryMin: number | null;
+  salaryMax: number | null;
+  currency: string;
+  techStack: string[];
+}
+
+export async function listNewJobs(): Promise<NewJob[]> {
   const notion = new Client({ auth: process.env.NOTION_TOKEN });
   const dbId = process.env.NOTION_DATABASE_ID!;
 
-  const jobs: object[] = [];
+  const jobs: NewJob[] = [];
   let cursor: string | undefined;
 
   do {
@@ -39,7 +51,13 @@ async function main() {
     cursor = res.has_more ? (res.next_cursor ?? undefined) : undefined;
   } while (cursor);
 
-  console.log(JSON.stringify(jobs, null, 2));
+  return jobs;
 }
 
-main().catch(err => { console.error(err.message); process.exit(1); });
+async function main() {
+  console.log(JSON.stringify(await listNewJobs(), null, 2));
+}
+
+if (require.main === module) {
+  main().catch(err => { console.error(err.message); process.exit(1); });
+}

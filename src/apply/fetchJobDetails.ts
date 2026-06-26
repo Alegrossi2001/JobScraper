@@ -68,11 +68,17 @@ function findAtsUrl($: cheerio.CheerioAPI): string | null {
   return atsUrl;
 }
 
-async function main() {
-  const url = process.argv[2];
-  if (!url) { console.error('Usage: tsx fetchJobDetails.ts <url>'); process.exit(1); }
+export interface JobDetails {
+  url: string;
+  description: string;
+  applyType: 'email' | 'ats' | 'unknown';
+  applyEmail: string | null;
+  atsUrl: string | null;
+  error?: string;
+}
 
-  const result: Record<string, any> = { url, description: '', applyType: 'unknown', applyEmail: null, atsUrl: null };
+export async function fetchJobDetails(url: string): Promise<JobDetails> {
+  const result: JobDetails = { url, description: '', applyType: 'unknown', applyEmail: null, atsUrl: null };
 
   try {
     const { data: html } = await axios.get<string>(proxyUrl(url), {
